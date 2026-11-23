@@ -1,0 +1,15 @@
+{
+  "name": "kinoko-skills",
+  "owner": {
+    "name": "Kinoko"
+  },
+  "metadata": {
+    "description": "Deterministic simulation testing with Kinoko"
+  },
+  "plugins": [
+    {
+      "name": "kinoko",
+      "source": "./"
+    }
+  ]
+}

@@ -1,39 +1,91 @@
-# Kinoko skill
+# Kinoko Skills
 
-Teaches an agent how to build software inside a [Kinoko](https://kinoko.sh)
-environment: the Yabu language, the stage → reasons → restage loop, model
-evolution, effects, and how to prove a change before trusting it.
+Agent skill for deterministic simulation testing with [Kinoko](https://kinoko.sh).
 
-**You may not need this.** Connecting to Kinoko's MCP server already delivers a
-short orientation with the connection, and the same reference material is
-available on demand as `kinoko://guide/*` resources. Install this when you want
-the depth in your local context — for example when working in Claude Code — or
-when your client does not surface MCP instructions.
+Teaches a coding agent how to design `compose.yaml` + `model.lua` workloads, define invariants and search-steering resources, validate locally, run cloud explorations within a minute budget, and time-travel debug findings.
+
+## Prerequisites
+
+- **Kinoko CLI:**
+  ```sh
+  curl -fsSL https://kinoko.sh/install.sh | sh
+  kinoko login
+  ```
+  (Or set `KINOKO_API_KEY` from [kinoko.sh](https://kinoko.sh) Settings. Set `KINOKO_URL` if targeting a self-hosted or dev instance.)
+- **Docker or Podman** with Compose (used by `kinoko push` to pack `images.tar` and by `kinoko run --local`).
 
 ## Install
 
-Into a single project:
+### `npx skills` (recommended — works with Claude Code, Codex, Cursor, etc.)
+
+```sh
+npx skills add kinoko-sh/skills
+```
+
+To update later: `npx skills update`.
+
+### Claude Code plugin
+
+```sh
+claude plugin marketplace add kinoko-sh/skills
+claude plugin install kinoko@kinoko-skills
+```
+
+### Manual
 
 ```sh
 git clone --depth 1 https://github.com/kinoko-sh/skills /tmp/kinoko-skills
-cp -R /tmp/kinoko-skills/kinoko .claude/skills/
+cp -R /tmp/kinoko-skills/kinoko ~/.claude/skills/
 ```
 
-Or for every project, copy it into `~/.claude/skills/` instead.
+(Or copy into `.claude/skills/` for a single project.)
 
-## What is in it
+## Usage
 
-| file | what it covers |
+Invoke the skill directly with `/kinoko` (or `$kinoko` depending on your agent), or just describe a Kinoko task in natural language.
+
+### Starter prompts
+
+End-to-end:
+```
+/kinoko Build a Kinoko workload for this service, verify it locally, run a 5-minute smoke test and a 15-minute run, and root-cause anything that fails.
+```
+
+Focused tasks:
+```
+/kinoko workload Design a compose.yaml and model.lua for the billing service in src/billing/ and get `kinoko run --local` passing.
+```
+```
+/kinoko properties Review our model.lua checks and steering resources — what invariants or failure modes are we missing?
+```
+```
+/kinoko run Push the workload in ./kinoko and run a 10-minute exploration.
+```
+```
+/kinoko debug Triage run <run-id> and root-cause the failing check.
+```
+
+## What's inside
+
+| File | Purpose |
 | --- | --- |
-| `SKILL.md` | the loop, the shapes, and the rules that cause the most rework |
-| `references/patterns.md` | composing several apps over shared stores, navigation, list/detail |
-| `references/effects.md` | every effect worked through, plus the AI → typed JSON pipeline |
-| `references/evolution.md` | changing a live model without breaking stored rows |
-| `references/verification.md` | `always`/`sometimes`, simulation, and what "done" means |
+| `kinoko/SKILL.md` | Entry point: prerequisites, doc grounding, minute-budget rules, module router |
+| `kinoko/references/workload.md` | Designing `compose.yaml` + `model.lua`, Lua sandbox rules, local validation loop |
+| `kinoko/references/properties.md` | Writing `always`/`eventually`/`sometimes`/`reply` checks, `steer`/`better` guidance, reviewing models |
+| `kinoko/references/run.md` | `kinoko push`, smoke vs. soak runs, minute budgets, interpreting run outcomes |
+| `kinoko/references/debug.md` | Triaging findings vs. model bugs, `kinoko probe`, `kinoko session` + `kinoko ask` |
+| `kinoko/references/patterns.md` | Worked idioms and real-world pitfalls (ack tracking, repeatable-read checks, slow startups, faults) |
 
-## Where this comes from
+## Tools invoked
 
-Generated from the Kinoko source, which holds the single copy of this text — the
-same files the MCP server serves as `kinoko://guide/*`. Do not edit here: this
-directory is regenerated on every release, so a change made in place is lost, and
-until it is, it teaches a language that differs from the one the server runs.
+The skill uses `kinoko`, `docker` or `podman` (via `kinoko push` and `kinoko run --local`), and optionally `curl` to fetch live docs from `https://kinoko.sh/docs.md`.
+
+## Validation
+
+```sh
+python3 scripts/validate-skills.py
+```
+
+## License
+
+[MIT](LICENSE)

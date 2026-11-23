@@ -1,0 +1,21 @@
+{
+  "name": "kinoko",
+  "version": "0.1.0",
+  "description": "Deterministic simulation testing with Kinoko: build workloads, run explorations, and time-travel debug findings",
+  "author": {
+    "name": "Kinoko",
+    "url": "https://kinoko.sh"
+  },
+  "homepage": "https://kinoko.sh",
+  "repository": "https://github.com/kinoko-sh/skills",
+  "license": "MIT",
+  "keywords": [
+    "kinoko",
+    "deterministic-simulation-testing",
+    "dst",
+    "fuzzing",
+    "testing",
+    "reliability"
+  ],
+  "skills": "./"
+}

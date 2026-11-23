@@ -1,0 +1,11 @@
+{
+  "$schema": "https://skills.sh/schemas/skills.sh.schema.json",
+  "notGrouped": "bottom",
+  "groupings": [
+    {
+      "title": "Kinoko",
+      "description": "Design workloads, run deterministic simulations, and debug findings with Kinoko.",
+      "skills": ["kinoko"]
+    }
+  ]
+}

@@ -1,118 +1,159 @@
-# Patterns
+# Kinoko Patterns and Pitfalls
 
-## A product is several apps over shared stores
+Proven patterns adapted from real Kinoko workloads, plus the operational gotchas that most often cause broken runs or false positives.
 
-The instinct from SPA work is one app with a client-side router. It is the wrong
-shape here and it costs real rework, so it is worth stating plainly.
+## 1. Standard HTTP + Postgres workload (`compose.yaml` + `model.lua`)
 
-Apps ARE the composition primitive. The environment serves each at
-`/app/<env>/<App>`, and every app in an environment shares the same stores. So a
-learning product is not one `JapaneseStories` with `case model.screen`; it is:
+```yaml
+services:
+  postgres:
+    image: postgres:17-alpine
+    pull_policy: never
+    container_name: postgres
+    environment:
+      POSTGRES_PASSWORD: pg
 
-```
-Dashboard   writes Word, writes Story, calls AI     (the workbench)
-Reader      reads Story, reads Word                 (focused reading)
-Review      reads Word, writes Word                 (study loop)
-```
+  app:
+    build: app
+    image: my-app:local
+    pull_policy: never
+    container_name: app
+    environment: &pg
+      PGHOST: postgres
+      PGUSER: postgres
+      PGPASSWORD: pg
+    depends_on: [postgres]
 
-Each app is a small TEA loop with almost no branching. The graph then shows the
-system honestly: which app can touch what, and which is read-only (provably — it
-has no write edge).
-
-**Why the monolith actively hurts:** navigation state (`screen`, `reading`,
-`reviewing`) has to live in the Model, but Model fields must be defaultable, so
-you cannot use a clean `Screen` enum and end up with stringly-typed nav in
-persisted state. Splitting deletes that problem rather than working around it.
-
-## Cross-app navigation
-
-A relative single-segment `href` resolves to a sibling app in the same env:
-
-```yabu
-<a href="Reader">Read your stories</a>       # from /app/<env>/Dashboard
-```
-
-Standalone this is a normal navigation. Embedded in the console graph, the app
-page reports the intent to the console, which **moves the camera to that app's
-node** instead of loading another app inside a card. The graph shows these as
-`nav` edges, derived from the anchors in your views — so the map tells you where
-a user can go, not just where data flows.
-
-## Screens without an enum
-
-When you genuinely need modes inside one app, express them with defaultable
-types and keep the branching in one place:
-
-```yabu
-defmodel App.Model do
-  # ... durable-ish session fields
-  open : Option<Uuid>    # a detail view: Some(id) is "open on this row"
-  editing : Bool
-  status : String        # "" | "saving" | "analyzing" — also drives loading UI
-end
-
-def App.view(model : App.Model) : Html do
-  <div>
-    {case model.open do
-      Option.Some(id) -> App.detail(model, id)
-      Option.None -> App.list(model)
-    end}
-  </div>
-end
+  client:
+    image: postgres:17-alpine
+    pull_policy: never
+    container_name: client
+    environment: *pg
+    entrypoint: ["sleep", "infinity"]
+    volumes:
+      - /hook:/hook:ro
+    depends_on: [app]
 ```
 
-`status : String` doubles as the loading flag — set it when you fire the effect,
-clear it in the handler, and branch on it in the view so a long call shows a
-spinner instead of a dead button.
+```lua
+setup("postgres up", "client", "until pg_isready -q; do sleep 0.2; done")
+setup("schema", "client", [[psql -qc "create table accounts (name text primary key, balance int not null); insert into accounts values ('alice', 100), ('bob', 100), ('carol', 100)"]])
+setup("app up", "client", "until wget -qO- http://app:8080/health; do sleep 0.2; done")
 
-## List / detail over a store
+resource("total", {
+  postgres = "client",
+  query = "select sum(balance) from accounts",
+  read = function(rows) return rows[1].sum end,
+  steer = true,
+})
 
-The detail view filters the already-loaded rows rather than issuing a `get`:
-fewer effects, and the list stays the single source of truth.
+resource("accounts", {
+  postgres = "client",
+  query = "select name from accounts order by name",
+  read = function(rows)
+    local names = {}
+    for i, row in ipairs(rows) do names[i] = row.name end
+    return names
+  end,
+})
 
-```yabu
-def App.detail(model : App.Model, id : Uuid) : Html do
-  <div>
-    <button on-click={App.Msg.Close}>Back</button>
-    {List.map(List.filter(model.rows, fn (r : App.Row) -> r.id == id end), fn (r : App.Row) ->
-      <article><p>{r.text}</p></article>
-    end)}
-  </div>
-end
+local amounts = { 1, 5, 20, 50 }
+action("transfer", { http = { "client", "app", 8080 } }, function(draw, r)
+  local from, others = draw.pick(r.accounts), {}
+  for _, name in ipairs(r.accounts) do
+    if name ~= from then others[#others + 1] = name end
+  end
+  return { method = "POST", path = "/transfer?from=" .. from .. "&to=" .. draw.pick(others) .. "&amount=" .. draw.pick(amounts) }
+end)
+
+always("money is conserved", function(r) return r.total == 300 end)
+reply("transfer", "transfer succeeds or refuses cleanly", function(asked, answer)
+  return answer == nil or answer.err ~= nil or answer.result.status == 200 or answer.result.status == 409
+end)
+
+fault { down = "app" }
+fault { down = "postgres" }
+fault { cut = { "app", "postgres" } }
+fault { slow = "app", to = "postgres", ms = 200 }
 ```
 
-## Per-item handlers
+## 2. Tracking acknowledged writes without race false positives
 
-An event attribute takes a fully-applied Msg, so binding an id per row works:
+When checking durability ("nothing acknowledged is lost"), concurrent actions and resource reads can race unless you order file reads and writes carefully:
 
-```yabu
-<button on-click={App.Msg.MarkDone(r.id)}>Got it</button>   # applied: carries the id
-<input on-change={App.Msg.SetName} />                       # a constructor ref: gets the value
+- **Insert/publish:** append the ID to `/tmp/acked` *after* the system acknowledges it; in the check resource, read `/tmp/acked` **before** querying the system.
+- **Delete/cancel:** append the ID to `/tmp/gone` **before** sending the delete; in the check resource, read `/tmp/gone` **after** querying the system.
+
+```lua
+-- Read acked BEFORE querying DB, and read gone AFTER querying DB:
+resource("lost", {
+  bash = "client",
+  command = [[said=$(sort -u /tmp/acked 2>/dev/null); have=$(psql -qAtc "select id from orders") && comm -23 <(echo "$said") <(echo "$have" | sort) | comm -23 - <(sort -u /tmp/gone 2>/dev/null) | grep -c . || true]],
+  read = function(out) return tonumber(out.stdout) end,
+})
 ```
 
-`on-click` wants a Msg **value**; `on-change` wants the **constructor**, which is
-applied to the input's value for you.
+If `psql` fails while Postgres is down, the `&&` short-circuits and prints nothing, so `tonumber(out.stdout)` returns `nil` (no reading on that tick, avoiding a false positive during an outage).
 
-## Loading rows on boot, then chaining
+## 3. Atomic multi-query checks
 
-`init` fires one read; each arrival can trigger the next. This is the idiomatic
-way to hydrate several stores.
+Never compare two separate SQL queries run back-to-back in an `always` check — concurrent writes can land between them. Wrap them in a single `REPEATABLE READ` transaction (as in a table-scan vs. index-scan check):
 
-```yabu
-def App.init() : (App.Model, Cmd<App.Msg>) do
-  (%App.Model{...}, Cmd.store.list(fn (rows : List<App.Word>) -> App.Msg.WordsLoaded(rows) end))
-end
-
-App.Msg.WordsLoaded(rows) ->
-  (%App.Model{model | words: rows},
-   Cmd.store.list(fn (ss : List<App.Story>) -> App.Msg.StoriesLoaded(ss) end))
+```lua
+resource("index_mismatch", {
+  bash = "client",
+  command = [[psql -qAt 2>/dev/null <<'SQL'
+begin isolation level repeatable read;
+set local enable_indexscan = off; set local enable_indexonlyscan = off; set local enable_bitmapscan = off;
+select count(*) from items where order_id > 0;
+set local enable_indexscan = on; set local enable_indexonlyscan = on; set local enable_bitmapscan = on; set local enable_seqscan = off;
+select count(*) from items where order_id > 0;
+commit;
+SQL]],
+  read = function(out)
+    local found = {}
+    for count in out.stdout:gmatch("%d+") do found[#found + 1] = tonumber(count) end
+    if #found == 2 then return found[1] - found[2] end
+  end,
+})
 ```
 
-The model a read targets is inferred from the **callback's element type** — that
-is how `store.list` knows which store to read.
+## 4. Slow-starting services (>30s setup or >20s recovery)
 
-## Styling
+- Each `setup` step has a **30-second timeout**. For a service that needs several minutes to boot and migrate, raise `ready_deadline_s` and split the wait into bounded steps ending with an explicit assertion:
+  ```lua
+  timing { ready_deadline_s = 600 }
+  for step = 1, 12 do
+    setup("service starts " .. step, "client", "timeout 25 sh -c 'until [ -e /tmp/serving ]; do sleep 0.5; done'; true")
+  end
+  setup("service is ready", "client", "test -e /tmp/serving")
+  ```
+- Settling allows at most **20 virtual seconds**. Do **not** declare `fault { down = "svc" }` for a container that takes >20s to restart — every run where it is killed late will fail to settle. Fault its network (`cut`, `slow`) and kill faster-restarting dependencies (`db`, `redis`, workers) instead.
 
-Views are JSX over an allowlist, styled with Tailwind utility classes. No
-`<script>`, no `on*` attributes, no `javascript:` URLs — the renderer rejects
-them. Write real design (spacing, hierarchy, states), not a bare prototype.
+## 5. Checking memory and CPU with `usage`
+
+Mount `/hook:/hook:ro` on the service container to sample its cgroup `memory_mb` and `cpu` (centicores over the last second):
+
+```lua
+resource("app_memory", {
+  usage = "app",
+  read = function(u) return u.memory_mb end,
+})
+resource("app_memory_bucket", {
+  usage = "app",
+  read = function(u) return u.memory_mb // 128 end,
+  steer = true,
+})
+always("app stays under 1 GB", function(r) return r.app_memory < 1024 end)
+```
+
+## 6. Operational pitfalls to remember
+
+- **Guest disk is 8 GB RAM (`vfs`):** Five containers sharing a 500 MB image consume 2.5 GB of guest RAM before the workload even starts. Keep images lean.
+- **`bash` concurrency:** Up to 32 shells stay open per `bash` action. Never rely on `cd` or shell variables persisting across calls; write state to files in `/tmp`, and avoid clobbering a shared temp file from concurrent invocations.
+- **Fault interactions:**
+  - Killing and restarting a container (`down`) resets any active `cut` or `slow` rules on it (the restarted container gets a new IP).
+  - Two `slow` faults on the same source container do not stack (`tc qdisc add` on the second is ignored, and whichever ends first removes the qdisc).
+  - A `cut` or `slow` started while the peer container is down cannot resolve the peer's IP and is skipped harmlessly.
+- **Large inline scripts:** `setup` commands (plus container name) cap at 4082 bytes, and all resource requests combined share the same limit. Put complex helper scripts or observers into the container image (or a small HTTP observer running inside `client`) rather than huge inline commands.
+- **Avoiding `eventually` false positives from in-flight work:** Expose an explicit `busy` / in-flight count resource if an async operation can still be completing, assert `eventually("all requests finished", ...)` on it, and guard dependent `eventually` checks when `r.busy > 0`.
