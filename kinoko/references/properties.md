@@ -60,3 +60,19 @@ So the question for every `eventually` is: what is the slowest legitimate way th
 - If the system's recovery clock is minutes (a cron sweep, a five-minute timer), a run that waits for it explores little. Shorten the clock in the workload instead: an environment variable if the SUT has one, a settings override, or a build step that rewrites the constant in the image and fails when the line it expects is gone. Say in the workload what was shortened and to what, and ask for the constant to become a setting.
 - A check that cannot be judged after settling (its resource is unreadable) is a finding too.
 
+## One `eventually` per stage
+
+A single "everything completes in the end" check finds the first reason something does not complete, and then nothing else: the shortest way to it is the reason already known, and every other reason hides behind it until that one is fixed. For a pipeline with stages, write an `eventually` for each stage that can get stuck in a way worth naming (admitted, verified, released), and let the general one skip what an earlier check already reports:
+
+```lua
+eventually("billing verifies every finalization of its own", function(r) ... end)
+eventually("every invoice billing took is processed", function(r)
+  return every(r, function(i)
+    if i.unverified or i.behind_an_unverified_one then return true end  -- reported above
+    return i.processed
+  end)
+end)
+```
+
+The same goes for an `always` that a known defect breaks on most runs: give the defect its own check and keep it out of the broader one, with a comment that says which check has it. A check nobody expects to pass teaches nothing, and one that is always red stops being read.
+

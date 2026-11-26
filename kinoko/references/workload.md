@@ -98,7 +98,7 @@ To preserve byte-for-byte deterministic replay, `model.lua` runs in a restricted
 - **Forbidden:** `os`, `io`, `debug`, `package`, `require`, `pcall`, `load`, metatables, clocks, `math.random`, non-deterministic `math` (`sin`, `exp`, `log`). `pairs`/`next` iterate in deterministic key order.
 - **Budget per call:** 1M instructions to load the script, 2M instructions per callback, 56 MB memory, capped pattern-matching cost (`^`-anchored or plain `string.find(..., 1, true)` is much cheaper than multiple `*`/`+`/`-` quantifiers), `string.rep` capped at 1 MB.
 - **Line & step caps:**
-  - Single mechanism request or response: **16 KB** max (larger answers become an `err`).
+  - Single mechanism request or response: **16 KB** max (larger answers become an `err`, and every check that reads the resource can no longer be judged). The limit is on the whole answer, and an HTTP body travels inside it as a JSON string, quotes escaped: a JSON body of about 13 KB was already too large. Budget 10 KB for a body that grows with the run.
   - `setup` command + container name: **4082 bytes** max (put longer scripts in the container image).
   - Each `setup` step times out after **30 seconds**; split slow readiness waits into multiple steps (see `references/patterns.md`).
 

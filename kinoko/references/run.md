@@ -30,7 +30,9 @@ kinoko push [dir] [--system <system>] [--name <name>] [--keep] [--no-detect]
 
 ### Billing and limits
 
-- A run takes `1` to `240` minutes (`--minutes N`, default `10`), plus ~1 minute of boot/image-load overhead before search starts.
+- A run takes `1` to `240` minutes (`--minutes N`, default `10`), plus ~1 minute of boot/image-load overhead before search starts. The minutes are the search. After it, the fewest steps to each finding are worked out, and that is not bounded by `--minutes`: a 4-minute run with five findings stayed `running` for 24 minutes. `kinoko show` lists the findings as they come, so read them while it finishes, and do not take a long `running` for a hang.
+- A run that ends as `error` with `no exit file` lost its machine (a spot machine taken back, usually). It cost nothing; start it again with `--seed` and the seed `kinoko show` prints.
+- `kinoko push` can fail on the upload of `images.tar` with a `400` from storage. Run it again with `--keep`: the archive is already packed.
 - **Max 2 concurrent runs** per account.
 - Minutes are reserved when a run starts (`N` for a run, `10` for a `probe`, `60` for a `session`), and unused minutes are refunded when the machine stops. Runs ending in `error` or `timeout` cost **0 minutes**.
 - Always track your spend against the task's minute budget (from the user, or 30 minutes default in `SKILL.md`). Stop and report before exceeding it.
