@@ -10,6 +10,8 @@ Start with:
 kinoko show <run-id>
 ```
 
+`kinoko map <run-id>` prints the run's map: for each steered resource, the values it took, the actions that led from one to another, how often, and which ended where a check failed. Read it before a pass is called coverage: a steered resource that only ever had one value means the search never left the start, whatever the checks said. `--json` gives it as the search wrote it.
+
 Extract from the output:
 - Which check failed (`FAIL ...`) and what reading it saw (`saw`).
 - The finding's node (`first at node <N>`) and virtual timestamp (`<T> s` after setup).
@@ -27,7 +29,7 @@ Check the common non-SUT causes first:
   - Comparing two queries taken at different moments instead of one `REPEATABLE READ` transaction.
   - Lua error / instruction or memory limit exceeded (`check` is null in `findings.jsonl`).
 - **Workload / settling bug:**
-  - `eventually` failed because a resource was still unreadable after the 20s settle window (for example, a slow-booting container was given a `down` fault).
+  - `eventually` failed because a resource was still unreadable after the settle window (`settle_s` of calm, capped at `max(20, settle_s + 12)` virtual seconds) (for example, a slow-booting container was given a `down` fault).
   - Container crashed due to missing env var, bad compose config, or guest OOM.
 - **Real SUT bug:**
   - The minimized timeline shows a clean, valid sequence of actions/faults that violates a genuine system guarantee.

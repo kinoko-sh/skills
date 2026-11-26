@@ -19,7 +19,8 @@ Keep the topology as small as possible — every extra container adds memory ove
   - `volumes: ["/hook:/hook:ro"]` (mounts Kinoko's mechanism binaries from the guest host)
   - Carries only the lightweight CLI tools your model needs (`psql`, `wget`/`curl`, `jq`, etc.)
   - **Never targeted by a `down` fault** (mechanism containers cannot be taken down, except for `usage`).
-- **Keep images small.** The guest's disk lives in 8 GB of RAM using Podman's `vfs` storage driver. `kinoko push` squashes layers automatically, but `vfs` still holds one unpacked copy per container. Prefer `-alpine` or minimal distroless/static images; aim for `images.tar` of a few hundred MB, well under 1 GB.
+- **Keep images small.** `images.tar` may be up to 5 GB: the guest scales its RAM to fit the archive and uses `overlay` storage, so containers of one image share its layers. Size still costs upload and boot time on every push and run, so prefer `-alpine` or minimal distroless/static images and build every service of one codebase from a single image.
+- **`kinoko check` reads `compose.yaml` line by line** for literal `container_name:` and `image:` lines. YAML anchors and merges (`<<: *service`) are fine as long as each service a model names still has its own `container_name:` line.
 
 ## 2. Write `model.lua`
 
@@ -28,7 +29,7 @@ Keep the topology as small as possible — every extra container adds memory ove
 ### Declarations
 
 ```lua
-timing { ready_deadline_s = 120, tick_ms = 5 }   -- optional; these are the defaults
+config { ready_deadline_s = 120, observe_ms = 5, settle_s = 2, max_fault_s = 5 }  -- optional; these are the defaults
 setup("name", "container", "command")             -- run once in order; nil runs on guest host
 
 resource("name", {
@@ -39,9 +40,9 @@ resource("name", {
   -- or: better = "more" | "less"                 -- optional: keep best exemplar per bucket
 })
 
-action("name", { <mechanism> }, function(draw, r)
+action("name", { <mechanism>, when = function(r) return ... end }, function(draw, r)
   return { ... }                                  -- mechanism request, or nil to skip
-end)
+end)                                              -- `when` is optional: whether the action can be done now
 
 always("unique name", function(r) return ... end)
 eventually("unique name", function(r) return ... end)
@@ -49,9 +50,25 @@ sometimes("unique name", function(r) return ... end)
 reply("action_name", "unique name", function(asked, answer) return ... end)
 
 fault { down = "container" }
+fault { pause = "container" }                     -- freeze and thaw: a GC or VM pause, no restart
 fault { cut = { "container_a", "container_b" } }
 fault { slow = "container_a", to = "container_b", ms = 200 }  -- `to` is optional
 ```
+
+### `config`
+
+All four are virtual time and optional. `timing { ready_deadline_s, tick_ms, settle_s }` is the legacy spelling of a subset and still parses.
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `ready_deadline_s` | 120 | Seconds allowed for containers to start and every `setup` step to finish. |
+| `observe_ms` (alias `tick_ms`) | 5 | Cadence of resource reads and action/fault steps while things move; calm periods back off by themselves. Raise it when a reading is expensive (an observer that joins two systems). |
+| `settle_s` | 2 | Seconds of calm an `eventually` check is given once faults have ended and every action was answered. See `properties.md`. |
+| `max_fault_s` | 5 | Longest a fault lasts (1 to 3600; durations are log-spaced from 25 ms). Raise it above a lease or timeout you want to see expire. |
+
+### `when` and `enabled`
+
+An action with `when = function(r) ... end` can only be drawn where that holds (it gets `r`, no `draw`; one that reads a resource never read yet cannot be done). Prefer it to returning `nil` for "needs at least one row first": the search then knows the action was not available instead of spending draws on nothing. Once any action has a `when`, every reading carries `r.enabled` (the actions that can be done, by name), so a check can say `r.enabled.pay`, and `enabled { steer = true }` makes the set a space the search steers by.
 
 ### Mechanisms
 

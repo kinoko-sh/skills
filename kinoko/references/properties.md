@@ -11,7 +11,7 @@ Never settle for vague goals ("test failover", "test replication"). Inspect the 
 | Check | When evaluated | Use for | Watch out for |
 | --- | --- | --- | --- |
 | `always(name, fn(r))` | Every tick where all resources `fn` touches have a reading | Safety invariants ("money is neither made nor lost", "an order is whole or absent", "enforced implies over limit"). | Accessing a resource with no reading aborts the call without failing that tick. Keep each `always` focused on only the resources it truly needs so an unrelated outage doesn't silence it. |
-| `eventually(name, fn(r))` | Once faults end and the system settles (up to 20 virtual seconds) | Convergence / liveness ("pending queue drains to 0", "shadow matches primary", "grace expires"). | **A resource that cannot be read after settling is itself a finding.** Don't `down`-fault a service that needs >20s to recover, and guard dependent `eventually` checks cleanly (see `references/patterns.md`). |
+| `eventually(name, fn(r))` | Once faults have ended and every action was answered, within `settle_s` virtual seconds of calm (default **2**) | Convergence / liveness ("pending queue drains to 0", "shadow matches primary", "grace expires"). | **A resource that cannot be read after settling is itself a finding.** Don't `down`-fault a service that needs >20s to recover, and guard dependent `eventually` checks cleanly (see `references/patterns.md`). |
 | `sometimes(name, fn(r))` | Must hold at least once across the entire search | Reachability / sanity goals ("at least one failover completed", "rate limit triggered", "compaction ran"). | Unreached `sometimes` fails the run. Use these as compass checks to prove the workload actually reaches the interesting regions of your system. |
 | `reply(action, name, fn(asked, answer))` | On every completed or timed-out action call | Per-request contracts ("unauthorized role is always rejected", "status is 200 or 409", "no 500s"). | Under faults, `answer` can be `nil` (no answer / timeout) or `{ err = ... }`. Allow expected transport/outage errors, and remember Postgres `sqlstate == "08006"` means **unknown whether committed**, not "rolled back". |
 
@@ -48,3 +48,15 @@ When asked to review a workload (or when a run passes too easily without finding
 3. **Fault coverage:** Are the right faults declared (`down`, `cut`, `slow`) for every stateful component and network edge? Are any `down` faults accidentally missing or targeting slow-boot containers that break settling?
 4. **Steering quality:** Is at least one meaningful `steer = true` resource defined? Are coupled dimensions combined? Are noisy/high-cardinality values excluded or bucketed?
 5. **Oracle soundness:** Do client-side durability checks avoid race-condition false positives (read ack log before querying SUT; record deletes before issuing delete; use `REPEATABLE READ` when comparing two SQL queries)?
+
+## How long "eventually" is
+
+A settling run stops injecting, waits for in-flight actions, and then judges. It ends **as soon as every `eventually` holds**; otherwise it gives them `settle_s` seconds of calm (default 2, `config { settle_s = N }`) and reports the ones that still do not hold. The whole settle is capped at `max(20, settle_s + 12)` virtual seconds, which is also how long it waits for an action that never answers or a resource that cannot be read.
+
+So the question for every `eventually` is: what is the slowest legitimate way this becomes true after the last fault, and is `settle_s` longer than that?
+
+- A retry loop, a sweep, a lease expiry, a restart: add their periods up. Two seconds covers almost none of them.
+- A larger `settle_s` is cheap on healthy lines (the settle ends when the checks hold) and only costs time where something is slow or stuck, which is what you want to hear about.
+- If the system's recovery clock is minutes (a cron sweep, a five-minute timer), a run that waits for it explores little. Shorten the clock in the workload instead: an environment variable if the SUT has one, a settings override, or a build step that rewrites the constant in the image and fails when the line it expects is gone. Say in the workload what was shortened and to what, and ask for the constant to become a setting.
+- A check that cannot be judged after settling (its resource is unreadable) is a finding too.
+

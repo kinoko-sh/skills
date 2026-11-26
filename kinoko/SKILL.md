@@ -15,7 +15,7 @@ Kinoko runs a containerized workload (`compose.yaml` + `model.lua`) inside a det
 ## Before starting
 
 1. Check that `kinoko` is installed (`command -v kinoko`). If missing, tell the user to install it with `curl -fsSL https://kinoko.sh/install.sh | sh`.
-2. For any cloud command (`push`, `run` without `--local`, `runs`, `show`, `probe`, `session`, `ask`, `cancel`), confirm auth works (`kinoko workloads`). If not signed in, ask the user to run `kinoko login` or set `KINOKO_API_KEY`. (`init`, `onboarding`, `check`, and `run --local` do not require auth.)
+2. For any cloud command (`push`, `run` without `--local`, `runs`, `show`, `probe`, `session`, `ask`, `cancel`), confirm auth works (`kinoko workloads`). If not signed in, ask the user to run `kinoko login` (`kinoko login --url <https://their-instance>` for a self-hosted Kinoko; the URL is kept with the key) or set `KINOKO_API_KEY`. The instance's own `/docs.md` is the reference for its version of the CLI and model language: read it when it disagrees with these files. (`init`, `onboarding`, `check`, and `run --local` do not require auth.)
 3. Treat `https://kinoko.sh/docs.md` (CLI + `model.lua` reference) and `https://kinoko.sh/openapi.json` as the canonical live reference if you are ever unsure about a flag, field, or API route.
 
 ## Modules

@@ -118,17 +118,17 @@ SQL]],
 })
 ```
 
-## 4. Slow-starting services (>30s setup or >20s recovery)
+## 4. Slow-starting services (>30s setup, or recovery slower than the settle)
 
 - Each `setup` step has a **30-second timeout**. For a service that needs several minutes to boot and migrate, raise `ready_deadline_s` and split the wait into bounded steps ending with an explicit assertion:
   ```lua
-  timing { ready_deadline_s = 600 }
+  config { ready_deadline_s = 600 }
   for step = 1, 12 do
     setup("service starts " .. step, "client", "timeout 25 sh -c 'until [ -e /tmp/serving ]; do sleep 0.5; done'; true")
   end
   setup("service is ready", "client", "test -e /tmp/serving")
   ```
-- Settling allows at most **20 virtual seconds**. Do **not** declare `fault { down = "svc" }` for a container that takes >20s to restart — every run where it is killed late will fail to settle. Fault its network (`cut`, `slow`) and kill faster-restarting dependencies (`db`, `redis`, workers) instead.
+- An `eventually` gets `settle_s` seconds of calm (default **2**), and a settle is capped at `max(20, settle_s + 12)` virtual seconds. A container that takes longer than that to come back from `fault { down = "svc" }` fails every run where it is killed late. Either raise `settle_s` to cover its restart, or leave `down` to what restarts fast (`db`, `redis`, workers) and use `pause`, `cut` and `slow` on the slow starter: `pause` stops a process for a while without a restart.
 
 ## 5. Checking memory and CPU with `usage`
 
@@ -149,7 +149,8 @@ always("app stays under 1 GB", function(r) return r.app_memory < 1024 end)
 
 ## 6. Operational pitfalls to remember
 
-- **Guest disk is 8 GB RAM (`vfs`):** Five containers sharing a 500 MB image consume 2.5 GB of guest RAM before the workload even starts. Keep images lean.
+- **Image size:** `images.tar` may be up to 5 GB and containers of one image share its layers (`overlay`), but every push uploads it and every run loads it. Keep images lean, and give different trees different image names: two workloads that both build `app:latest` overwrite each other locally.
+- **One local run at a time:** `kinoko run --local` uses the compose file's fixed container names, so a second local run (or a leftover `docker compose up` of another workload with a `db` or `web`) collides. On arm64 hosts the images are still `linux/amd64`: build steps run under emulation and can take many times longer, so bake slow one-off work (migrations, asset builds) into an image layer.
 - **`bash` concurrency:** Up to 32 shells stay open per `bash` action. Never rely on `cd` or shell variables persisting across calls; write state to files in `/tmp`, and avoid clobbering a shared temp file from concurrent invocations.
 - **Fault interactions:**
   - Killing and restarting a container (`down`) resets any active `cut` or `slow` rules on it (the restarted container gets a new IP).
@@ -157,3 +158,25 @@ always("app stays under 1 GB", function(r) return r.app_memory < 1024 end)
   - A `cut` or `slow` started while the peer container is down cannot resolve the peer's IP and is skipped harmlessly.
 - **Large inline scripts:** `setup` commands (plus container name) cap at 4082 bytes, and all resource requests combined share the same limit. Put complex helper scripts or observers into the container image (or a small HTTP observer running inside `client`) rather than huge inline commands.
 - **Avoiding `eventually` false positives from in-flight work:** Expose an explicit `busy` / in-flight count resource if an async operation can still be completing, assert `eventually("all requests finished", ...)` on it, and guard dependent `eventually` checks when `r.busy > 0`.
+
+## 7. Twins of third-party services
+
+When the SUT's correctness depends on a provider you cannot run in the guest (a payment API, a tax engine), you write a twin. A twin is also where a model goes wrong quietly, so:
+
+- **Do not derive the twin from the SUT.** A twin that implements what the SUT's own verifier expects can only agree with it. Write the twin from the provider's documentation, then write a small conformance script that asks the same questions of the provider's sandbox and of the twin, and commit the provider's answers. Run the twin against them whenever it changes. (Doing this for a Stripe twin showed that the system under test expected two balance transactions where Stripe writes one.)
+- **Say what was not checked.** List in the twin's header which behaviours come from the sandbox, which from documentation only, and which are guesses. A finding that rests on a guess is a question for the provider first.
+- **Let the twin tell callers apart** (an API key per caller is enough) and keep a record of every write: who, with which idempotency key, in what order. The checks then compare what the SUT believes with what the provider was actually asked.
+- **Fail loudly on what the twin does not model.** Count unknown routes and its own exceptions, expose them as a resource, and assert `always` that there are none: a finding caused by the twin must not look like one caused by the SUT.
+- **Keep a twin with in-memory state out of `down` faults.** `cut`, `slow` and `pause` it instead, or give it a file to come back to.
+- **Compress the provider's clocks in the twin** (retry schedules, an hour before auto-finalization) by the same order as the SUT's, and say so.
+
+## 8. An oracle that reads two systems
+
+A check that compares the SUT's database with a twin's record reads them at two moments. Make the order part of the design:
+
+- For "the provider saw X, so the SUT must already have saved Y" (intent before effect), read the provider first and the SUT second.
+- For "the SUT claims Y, so X must be true at the provider", read the SUT first and the provider second.
+- An observer that needs both reads the provider, then the SUT, then the provider again, and uses the first reading for the first kind of check and the last for the second.
+- Where the SUT cannot close a window (the provider has no compare-and-set, so an input can change between the SUT's last read and its write), do not let it fail an `always`. Have the twin record whether the input changed after the SUT last read it, exclude that case from the `always`, and add a `sometimes` named as a known gap so the run still says whether the window was reached.
+- One HTTP observer in `client` that returns a compact row per entity keeps this in code you can test, and keeps the answer under the 16 KB limit. Bound how many entities a run creates (`when`) so the reading cannot outgrow it.
+
