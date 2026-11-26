@@ -31,8 +31,14 @@ Check the common non-SUT causes first:
 - **Workload / settling bug:**
   - `eventually` failed because a resource was still unreadable after the settle window (`settle_s` of calm, capped at `max(20, settle_s + 12)` virtual seconds) (for example, a slow-booting container was given a `down` fault).
   - Container crashed due to missing env var, bad compose config, or guest OOM.
+  - The database ran out of connections. A stack without production's pooler fills on a burst the pooler would absorb, and every request after it fails. `psql` in a probe then answers `too many clients` too: read the backends from `podman exec db ps -o args`, where Postgres writes each one's client address and state.
 - **Real SUT bug:**
   - The minimized timeline shows a clean, valid sequence of actions/faults that violates a genuine system guarantee.
+
+An `eventually` that fails with every container up and no failed fault end is not the harness's by default. Two things it has been:
+
+- The system parked the work for a person (a repair state, a dead-letter table). To the check that is lost work. Put that state and the system's own reason for it in a reading, give it a check of its own, and leave it out of the others. The finding then names its cause, and no probe is needed to tell it from a real loss.
+- A resource limit of the stack, as above.
 
 Never guess between these — inspect the real guest state at the failing moment.
 
