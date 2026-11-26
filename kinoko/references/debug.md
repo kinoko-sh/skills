@@ -62,6 +62,12 @@ kinoko show <probe-run-id>           # once complete, report holds each command'
 
 Batch as many questions as you can into one probe file — all lines for a node share one replay pass, and multiple nodes run in parallel. Put dependent commands on one line with `;` since separate lines run on independent copies.
 
+Three things the command's help does not say:
+
+- A command has 30 virtual seconds (`Failed("no reply within 30 virtual s")` past that). The guest keeps running while it waits, so `sleep 25; <command>` shows the system 25 seconds after the node: whether a stall heals, whether a queue keeps growing.
+- A cancelled run can be probed. A run with findings stays `running` for a long time while it works out the fewest steps, and a probe needs it ended. When the finding you care about is an `eventually` (no steps will come), or its steps are already in `kinoko show`, cancel and probe.
+- To ask a twin or a driver what it holds, `podman exec <a container with an interpreter> python -c "..."` against the twin's own API. Use a caller the twin does not count as the system under test, or the question changes the answer.
+
 ### Option B: Interactive session (`kinoko session` + `kinoko ask`)
 
 Use a session when you need iterative, hypothesis-driven forensics along one finding's timeline (typically its minimized path):
