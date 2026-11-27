@@ -22,7 +22,6 @@ services:
       PGHOST: postgres
       PGUSER: postgres
       PGPASSWORD: pg
-    depends_on: [postgres]
 
   client:
     image: postgres:17-alpine
@@ -32,7 +31,6 @@ services:
     entrypoint: ["sleep", "infinity"]
     volumes:
       - /hook:/hook:ro
-    depends_on: [app]
 ```
 
 ```lua
@@ -156,6 +154,7 @@ always("app stays under 1 GB", function(r) return r.app_memory < 1024 end)
   - Killing and restarting a container (`down`) resets any active `cut` or `slow` rules on it (the restarted container gets a new IP).
   - Two `slow` faults on the same source container do not stack (`tc qdisc add` on the second is ignored, and whichever ends first removes the qdisc).
   - A `cut` or `slow` started while the peer container is down cannot resolve the peer's IP and is skipped harmlessly.
+  - Leave `depends_on` out of the compose file. The guest brings the stack up with podman-compose, which makes each edge a requirement of the container, and podman does not start a container while one it requires is paused. The end of a `down` then fails (`podman start` exits 125), the container stays down for the rest of the line, and the line is judged all the same. Wait for dependencies in `setup` steps, as the first pattern does, and let each service wait for what it needs when it starts. A stack of nine containers failed its completion checks in most runs for this reason, and held them for a whole run once the edges were gone.
 - **Large inline scripts:** `setup` commands (plus container name) cap at 4082 bytes, and all resource requests combined share the same limit. Put complex helper scripts or observers into the container image (or a small HTTP observer running inside `client`) rather than huge inline commands.
 - **Avoiding `eventually` false positives from in-flight work:** Expose an explicit `busy` / in-flight count resource if an async operation can still be completing, assert `eventually("all requests finished", ...)` on it, and guard dependent `eventually` checks when `r.busy > 0`.
 
