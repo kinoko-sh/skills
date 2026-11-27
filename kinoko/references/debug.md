@@ -10,6 +10,8 @@ Start with:
 kinoko show <run-id>
 ```
 
+`kinoko map <run-id>` prints the run's map: for each steered resource, the values it took, the actions that led from one to another, how often, and which ended where a check failed. Read it before a pass is called coverage: a steered resource that only ever had one value means the search never left the start, whatever the checks said. `--json` gives it as the search wrote it.
+
 Extract from the output:
 - Which check failed (`FAIL ...`) and what reading it saw (`saw`).
 - The finding's node (`first at node <N>`) and virtual timestamp (`<T> s` after setup).
@@ -27,10 +29,16 @@ Check the common non-SUT causes first:
   - Comparing two queries taken at different moments instead of one `REPEATABLE READ` transaction.
   - Lua error / instruction or memory limit exceeded (`check` is null in `findings.jsonl`).
 - **Workload / settling bug:**
-  - `eventually` failed because a resource was still unreadable after the 20s settle window (for example, a slow-booting container was given a `down` fault).
+  - `eventually` failed because a resource was still unreadable after the settle window (`settle_s` of calm, capped at `max(20, settle_s + 12)` virtual seconds) (for example, a slow-booting container was given a `down` fault).
   - Container crashed due to missing env var, bad compose config, or guest OOM.
+  - The database ran out of connections. A stack without production's pooler fills on a burst the pooler would absorb, and every request after it fails. `psql` in a probe then answers `too many clients` too: read the backends from `podman exec db ps -o args`, where Postgres writes each one's client address and state.
 - **Real SUT bug:**
   - The minimized timeline shows a clean, valid sequence of actions/faults that violates a genuine system guarantee.
+
+An `eventually` that fails with every container up and no failed fault end is not the harness's by default. Two things it has been:
+
+- The system parked the work for a person (a repair state, a dead-letter table). To the check that is lost work. Put that state and the system's own reason for it in a reading, give it a check of its own, and leave it out of the others. The finding then names its cause, and no probe is needed to tell it from a real loss.
+- A resource limit of the stack, as above.
 
 Never guess between these — inspect the real guest state at the failing moment.
 
@@ -59,6 +67,12 @@ kinoko show <probe-run-id>           # once complete, report holds each command'
 ```
 
 Batch as many questions as you can into one probe file — all lines for a node share one replay pass, and multiple nodes run in parallel. Put dependent commands on one line with `;` since separate lines run on independent copies.
+
+Three things the command's help does not say:
+
+- A command has 30 virtual seconds (`Failed("no reply within 30 virtual s")` past that). The guest keeps running while it waits, so `sleep 25; <command>` shows the system 25 seconds after the node: whether a stall heals, whether a queue keeps growing.
+- A cancelled run can be probed. A run with findings stays `running` for a long time while it works out the fewest steps, and a probe needs it ended. When the finding you care about is an `eventually` (no steps will come), or its steps are already in `kinoko show`, cancel and probe.
+- To ask a twin or a driver what it holds, `podman exec <a container with an interpreter> python -c "..."` against the twin's own API. Use a caller the twin does not count as the system under test, or the question changes the answer.
 
 ### Option B: Interactive session (`kinoko session` + `kinoko ask`)
 
